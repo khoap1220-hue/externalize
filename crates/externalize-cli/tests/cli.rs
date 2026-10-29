@@ -209,3 +209,36 @@ fn derive_carries_org_names_forward() {
     let out = stdout(cli().args(["trust", "derive", SCP, "--names-from", shipped]));
     assert!(out.contains("name = \"LOBSTR\"") && !out.contains("org-"), "{out}");
 }
+
+#[test]
+fn ancestry_accepts_an_archive_directory_and_skips_unneeded_checkpoints() {
+    let missing = cli()
+        .args(["ancestry", "--bundle", BUNDLE, "--headers", HEADERS_NEWER, "--ledger", "64791250"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8(missing.stderr).unwrap();
+    assert!(err.contains("ledger/03/dc/a2/ledger-03dca2ff.xdr.gz"), "{err}");
+
+    let root = std::env::temp_dir().join("externalize-ancestry-archive-dir");
+    let _ = std::fs::remove_dir_all(&root);
+    let dir_a2 = root.join("ledger/03/dc/a2");
+    let dir_a3 = root.join("ledger/03/dc/a3");
+    std::fs::create_dir_all(&dir_a2).unwrap();
+    std::fs::create_dir_all(&dir_a3).unwrap();
+    std::fs::copy(HEADERS_OLDER, dir_a2.join("ledger-03dca2ff.xdr.gz")).unwrap();
+    std::fs::copy(HEADERS_NEWER, dir_a3.join("ledger-03dca33f.xdr.gz")).unwrap();
+    std::fs::write(dir_a2.join("ledger-03dca2bf.xdr.gz"), b"not gzip").unwrap();
+    std::fs::write(dir_a3.join("ledger-03dca37f.xdr.gz"), b"not gzip").unwrap();
+
+    let out = stdout(cli().args([
+        "ancestry",
+        "--bundle",
+        BUNDLE,
+        "--headers",
+        root.to_str().unwrap(),
+        "--ledger",
+        "64791250",
+    ]));
+    assert!(out.contains("VERIFIED  ledger 64791250"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}
