@@ -24,6 +24,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Verify a proof bundle. Exit status: 0 verified, 1 rejected, 2 could not run.
+    ///
+    /// Exit codes:
+    ///   0  verified
+    ///   1  rejected
+    ///   2  could not run (unreadable input, invalid trust file, bad arguments)
+    #[command(verbatim_doc_comment)]
     Verify {
         /// Bundle file (`-` for stdin).
         bundle: PathBuf,
@@ -36,6 +42,9 @@ enum Command {
         /// Also print every proven contract event, decoded.
         #[arg(long)]
         events: bool,
+        /// Print nothing when the bundle verifies; still report rejection reasons on failure.
+        #[arg(long, short)]
+        quiet: bool,
     },
     /// Show what a bundle claims, without verifying anything.
     Inspect {
@@ -122,7 +131,9 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, String> {
     match cli.command {
-        Command::Verify { bundle, trust, json, events } => verify(&bundle, trust.as_deref(), json, events),
+        Command::Verify { bundle, trust, json, events, quiet } => {
+            verify(&bundle, trust.as_deref(), json, events, quiet)
+        }
         Command::Inspect { bundle, json } => {
             let b = Bundle::from_json(&read_input(&bundle)?).map_err(|e| e.to_string())?;
             if json {
@@ -174,7 +185,7 @@ fn load_trust(path: Option<&Path>, network: &str) -> Result<TrustSet, String> {
     TrustSet::from_toml(&text).map_err(|e| e.to_string())
 }
 
-fn verify(bundle: &Path, trust: Option<&Path>, as_json: bool, events: bool) -> Result<ExitCode, String> {
+fn verify(bundle: &Path, trust: Option<&Path>, as_json: bool, events: bool, quiet: bool) -> Result<ExitCode, String> {
     let outcome = match Bundle::from_json(&read_input(bundle)?) {
         Ok(b) => {
             let trust = load_trust(trust, &b.network)?;
@@ -182,11 +193,12 @@ fn verify(bundle: &Path, trust: Option<&Path>, as_json: bool, events: bool) -> R
         }
         Err(e) => Err(e),
     };
-    match (&outcome, as_json) {
-        (Ok((v, t)), true) => println!("{}", report::verified(v, t, events)),
-        (Ok((v, t)), false) => print!("{}", report_text(v, t, events)),
-        (Err(e), true) => println!("{}", report::rejected(e)),
-        (Err(e), false) => eprintln!("REJECTED  {e}"),
+    match (&outcome, as_json, quiet) {
+        (Ok(_), _, true) => {}
+        (Ok((v, t)), true, false) => println!("{}", report::verified(v, t, events)),
+        (Ok((v, t)), false, false) => print!("{}", report_text(v, t, events)),
+        (Err(e), true, _) => println!("{}", report::rejected(e)),
+        (Err(e), false, _) => eprintln!("REJECTED  {e}"),
     }
     Ok(if outcome.is_ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }

@@ -209,3 +209,31 @@ fn derive_carries_org_names_forward() {
     let out = stdout(cli().args(["trust", "derive", SCP, "--names-from", shipped]));
     assert!(out.contains("name = \"LOBSTR\"") && !out.contains("org-"), "{out}");
 }
+
+#[test]
+fn verify_quiet_prints_nothing_on_success_and_reports_reason_on_failure() {
+    let ok = cli().args(["verify", "-q", BUNDLE]).output().unwrap();
+    assert_eq!(ok.status.code(), Some(0));
+    assert!(ok.stdout.is_empty(), "expected empty stdout on quiet success");
+    assert!(ok.stderr.is_empty(), "expected empty stderr on quiet success");
+
+    let tampered = std::fs::read_to_string(BUNDLE).unwrap().replacen(""op_index": 0", ""op_index": 1", 1);
+    let fail = cli().args(["verify", "--quiet", "-"]).write_stdin(tampered.clone()).output().unwrap();
+    assert_eq!(fail.status.code(), Some(1));
+    let err = String::from_utf8(fail.stderr).unwrap();
+    assert!(err.starts_with("REJECTED  "), "{err}");
+
+    let fail_json = cli().args(["verify", "-q", "--json", "-"]).write_stdin(tampered).output().unwrap();
+    assert_eq!(fail_json.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&fail_json.stdout).unwrap();
+    assert_eq!(v["verified"], false);
+}
+
+#[test]
+fn verify_help_documents_exit_codes() {
+    let help = stdout(cli().args(["verify", "--help"]));
+    assert!(help.contains("0") && help.contains("verified"), "{help}");
+    assert!(help.contains("1") && help.contains("rejected"), "{help}");
+    assert!(help.contains("2") && help.contains("could not run"), "{help}");
+    assert!(help.contains("-q, --quiet"), "{help}");
+}
