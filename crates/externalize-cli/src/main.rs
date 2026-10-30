@@ -108,6 +108,22 @@ enum TrustCommand {
         #[arg(long)]
         names_from: Option<PathBuf>,
     },
+    /// Check a trust set against the signers in an archive `scp-*.xdr.gz` file.
+    ///
+    /// Reports how many validators in each org signed in the checkpoint and
+    /// flags absent validators or orgs below their threshold. Exit status: 0 if
+    /// every validator signed and the trust set is satisfied, 1 if any
+    /// validator is absent or any org is below threshold, 2 if it could not run.
+    Check {
+        /// SCP history file from a history archive.
+        scp: PathBuf,
+        /// Trust file to check. Defaults to the built-in set for `--network`.
+        #[arg(long)]
+        trust: Option<PathBuf>,
+        /// Network for the built-in trust set (`public` or `testnet`).
+        #[arg(long, default_value = "public")]
+        network: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -148,6 +164,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             print!("{}", derive(&scp, &Network::from_name(&network), known.as_ref())?);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Trust(TrustCommand::Check { scp, trust, network }) => check_trust(&scp, trust.as_deref(), &network),
     }
 }
 
@@ -305,6 +322,55 @@ fn describe(t: &TrustSet) -> String {
         let _ = writeln!(out, "  {name:<32} {} of {}", inner.threshold, inner.validators.len());
     }
     out
+}
+
+fn check_trust(scp: &Path, trust_path: Option<&Path>, network: &str) -> Result<ExitCode, String> {
+    let trust = load_trust(trust_path, network)?;
+    let entries = read_scp(scp)?;
+    if entries.is_empty() {
+        return Err("no SCP entries in file".into());
+    }
+    let signers = trust.checkpoint_signers(&entries);
+    let signed_keys: std::collections::BTreeSet<[u8; 32]> = signers.iter().map(quorum::node_key).collect();
+    let quorum_ok = trust.is_satisfied_by(&signed_keys);
+    let orgs = trust.org_report(&signers);
+    let absent = trust.absent_validators(&signers);
+
+    let mut out = format!(
+        "network    {}\nstatus     {}\n",
+        trust.network().passphrase(),
+        if quorum_ok && absent.is_empty() {
+            "ok"
+        } else if quorum_ok {
+            "stale (absent validators)"
+        } else {
+            "BELOW THRESHOLD"
+        }
+    );
+    for v in trust.quorum().validators.iter() {
+        let status = if signed_keys.contains(&quorum::node_key(v)) { "signed" } else { "absent" };
+        let _ = writeln!(out, "  validator {v}  {status}");
+    }
+    for o in &orgs {
+        let flag = if !o.satisfied {
+            "  BELOW THRESHOLD"
+        } else if !o.absent.is_empty() {
+            "  stale"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  {:<32} {} of {} signed (threshold {}){flag}",
+            o.name, o.signed, o.validators, o.threshold
+        );
+        for v in &o.absent {
+            let _ = writeln!(out, "    absent  {v}");
+        }
+    }
+    print!("{out}");
+    let healthy = quorum_ok && absent.is_empty() && orgs.iter().all(|o| o.satisfied);
+    Ok(if healthy { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
 
 /// Formats unix seconds as an RFC 3339 UTC timestamp (proleptic Gregorian, days-from-civil inverse).

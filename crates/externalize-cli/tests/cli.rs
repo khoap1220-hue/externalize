@@ -209,3 +209,35 @@ fn derive_carries_org_names_forward() {
     let out = stdout(cli().args(["trust", "derive", SCP, "--names-from", shipped]));
     assert!(out.contains("name = \"LOBSTR\"") && !out.contains("org-"), "{out}");
 }
+
+#[test]
+fn trust_check_reports_absent_validators_and_orgs_below_threshold() {
+    let ok = cli().args(["trust", "check", SCP]).output().unwrap();
+    assert_eq!(ok.status.code(), Some(0));
+    let out = String::from_utf8(ok.stdout).unwrap();
+    assert!(out.contains("status     ok"), "{out}");
+    assert!(out.contains("3 of 3 signed (threshold 2)"), "{out}");
+
+    let shipped = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../trust/public.toml")).unwrap();
+    let rotated_key = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7";
+    let one_rotated = shipped.replacen("GAAV2GCVFLNN522ORUYFV33E76VPC22E72S75AQ6MBR5V45Z5DWVPWEU", rotated_key, 1);
+    let one_path = std::env::temp_dir().join("externalize-trust-check-one-rotated.toml");
+    std::fs::write(&one_path, &one_rotated).unwrap();
+
+    let stale = cli().args(["trust", "check", SCP, "--trust", one_path.to_str().unwrap()]).output().unwrap();
+    assert_eq!(stale.status.code(), Some(1));
+    let stale_out = String::from_utf8(stale.stdout).unwrap();
+    assert!(stale_out.contains(&format!("absent  {rotated_key}")), "{stale_out}");
+    assert!(stale_out.contains("2 of 3 signed (threshold 2)  stale"), "{stale_out}");
+
+    let second_rotated = "GBDEVU63Y6NTHJQQZIKVTC23NWLQVP3WJ2RI2OTSJTNYOIGICST6DUXR";
+    let two_rotated =
+        one_rotated.replacen("GCVJ4Z6TI6Z2SOGENSPXDQ2U4RKH3CNQKYUHNSSPYFPNWTLGS6EBH7I2", second_rotated, 1);
+    let two_path = std::env::temp_dir().join("externalize-trust-check-two-rotated.toml");
+    std::fs::write(&two_path, &two_rotated).unwrap();
+
+    let degraded = cli().args(["trust", "check", SCP, "--trust", two_path.to_str().unwrap()]).output().unwrap();
+    assert_eq!(degraded.status.code(), Some(1));
+    let degraded_out = String::from_utf8(degraded.stdout).unwrap();
+    assert!(degraded_out.contains("1 of 3 signed (threshold 2)  BELOW THRESHOLD"), "{degraded_out}");
+}

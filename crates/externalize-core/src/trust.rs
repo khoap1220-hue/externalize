@@ -56,14 +56,55 @@ impl TrustSet {
             .iter()
             .enumerate()
             .map(|(i, org)| {
-                let count = org.validators.iter().filter(|v| signed.contains(&quorum::node_key(v))).count();
+                let absent: Vec<stellar_xdr::NodeId> =
+                    org.validators.iter().filter(|v| !signed.contains(&quorum::node_key(v))).cloned().collect();
+                let count = org.validators.len().saturating_sub(absent.len());
                 OrgReport {
                     name: self.org_name(i).map_or_else(|| format!("org {}", i.saturating_add(1)), str::to_owned),
                     signed: count,
                     validators: org.validators.len(),
+                    threshold: org.threshold,
                     satisfied: quorum::is_satisfied(org, &signed),
+                    absent,
                 }
             })
+            .collect()
+    }
+
+    /// Trusted validators that signed at least one valid EXTERNALIZE statement in `entries`.
+    pub fn checkpoint_signers(&self, entries: &[stellar_xdr::ScpHistoryEntry]) -> Vec<stellar_xdr::NodeId> {
+        let mut signers = BTreeSet::new();
+        for stellar_xdr::ScpHistoryEntry::V0(entry) in entries {
+            let seq = entry.ledger_messages.ledger_seq;
+            for env in entry.ledger_messages.messages.iter() {
+                if !matches!(env.statement.pledges, stellar_xdr::ScpStatementPledges::Externalize(_)) {
+                    continue;
+                }
+                if env.statement.slot_index != u64::from(seq) {
+                    continue;
+                }
+                if let Some(node) = crate::scp::verified_signer(&self.network, env)
+                    && self.contains(&node)
+                {
+                    signers.insert(node);
+                }
+            }
+        }
+        signers
+            .into_iter()
+            .map(|k| stellar_xdr::NodeId(stellar_xdr::PublicKey::PublicKeyTypeEd25519(stellar_xdr::Uint256(k))))
+            .collect()
+    }
+
+    /// Validators in the trust set that are not in `signers`.
+    pub fn absent_validators(&self, signers: &[stellar_xdr::NodeId]) -> Vec<stellar_xdr::NodeId> {
+        let signed: BTreeSet<NodeKey> = signers.iter().map(quorum::node_key).collect();
+        self.quorum
+            .validators
+            .iter()
+            .chain(self.quorum.inner_sets.iter().flat_map(|o| o.validators.iter()))
+            .filter(|v| !signed.contains(&quorum::node_key(v)))
+            .cloned()
             .collect()
     }
 
@@ -82,8 +123,12 @@ pub struct OrgReport {
     pub signed: usize,
     /// Validators the org has.
     pub validators: usize,
+    /// Validators required for the org to agree.
+    pub threshold: u32,
     /// Whether the org's own threshold was met.
     pub satisfied: bool,
+    /// Validators of the org that did not sign.
+    pub absent: Vec<stellar_xdr::NodeId>,
 }
 
 #[cfg(feature = "config")]
